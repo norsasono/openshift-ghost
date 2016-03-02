@@ -1,0 +1,1 @@
+# OpenShift Ghost (0.7.8)
