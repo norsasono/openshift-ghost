@@ -1,0 +1,4 @@
+#!/bin/bash
+
+echo "Set NPM production env variable"
+echo "true" > $OPENSHIFT_HOMEDIR/.env/user_vars/NPM_CONFIG_PRODUCTION
