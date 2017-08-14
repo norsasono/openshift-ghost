@@ -2,72 +2,93 @@
 // RESTful API for browsing the configuration
 var _                  = require('lodash'),
     config             = require('../config'),
-    errors             = require('../errors'),
+    settingsCache      = require('../settings/cache'),
+    ghostVersion       = require('../utils/ghost-version'),
+    models             = require('../models'),
     Promise            = require('bluebird'),
-    i18n               = require('../i18n'),
+    utils              = require('../utils'),
 
     configuration;
 
-function labsFlag(key) {
+function fetchAvailableTimezones() {
+    var timezones = require('../data/timezones.json');
+    return timezones;
+}
+
+function getAboutConfig() {
     return {
-        value: (config[key] === true),
-        type: 'bool'
+        version: ghostVersion.full,
+        environment: config.get('env'),
+        database: config.get('database').client,
+        mail: _.isObject(config.get('mail')) ? config.get('mail').transport : ''
     };
 }
 
-function getValidKeys() {
-    var validKeys = {
-            fileStorage: {value: (config.fileStorage !== false), type: 'bool'},
-            publicAPI: labsFlag('publicAPI'),
-            apps: {value: (config.apps === true), type: 'bool'},
-            version: {value: config.ghostVersion, type: 'string'},
-            environment: process.env.NODE_ENV,
-            database: config.database.client,
-            mail: _.isObject(config.mail) ? config.mail.transport : '',
-            blogUrl: {value: config.url.replace(/\/$/, ''), type: 'string'},
-            blogTitle: {value: config.theme.title, type: 'string'},
-            routeKeywords: {value: JSON.stringify(config.routeKeywords), type: 'json'}
-        };
-
-    return validKeys;
-}
-
-function formatConfigurationObject(val, key) {
+function getBaseConfig() {
     return {
-        key: key,
-        value: (_.isObject(val) && _.has(val, 'value')) ? val.value : val,
-        type: _.isObject(val) ? (val.type || null) : null
+        useGravatar:    !config.isPrivacyDisabled('useGravatar'),
+        publicAPI:      config.get('publicAPI') === true,
+        blogUrl:        utils.url.urlFor('home', true),
+        blogTitle:      settingsCache.get('title'),
+        routeKeywords:  config.get('routeKeywords'),
+        clientExtensions: config.get('clientExtensions')
     };
 }
 
 /**
  * ## Configuration API Methods
  *
+ * We need to load the client credentials dynamically.
+ * For example: on bootstrap ghost-auth get's created and if we load them here in parallel,
+ * it can happen that we won't get any client credentials or wrong credentials.
+ *
  * **See:** [API Methods](index.js.html#api%20methods)
  */
 configuration = {
 
     /**
-     * ### Browse
-     * Fetch all configuration keys
-     * @returns {Promise(Configurations)}
-     */
-    browse: function browse() {
-        return Promise.resolve({configuration: _.map(getValidKeys(), formatConfigurationObject)});
-    },
-
-    /**
-     * ### Read
-     *
+     * Always returns {configuration: []}
+     * Sometimes the array contains configuration items
+     * @param {Object} options
+     * @returns {Promise<Object>}
      */
     read: function read(options) {
-        var data = getValidKeys();
+        options = options || {};
+        var ops = {};
 
-        if (_.has(data, options.key)) {
-            return Promise.resolve({configuration: [formatConfigurationObject(data[options.key], options.key)]});
-        } else {
-            return Promise.reject(new errors.NotFoundError(i18n.t('errors.api.configuration.invalidKey')));
+        if (!options.key) {
+            ops.ghostAdmin = models.Client.findOne({slug: 'ghost-admin'});
+
+            if (config.get('auth:type') === 'ghost') {
+                ops.ghostAuth = models.Client.findOne({slug: 'ghost-auth'});
+            }
+
+            return Promise.props(ops)
+                .then(function (result) {
+                    var configuration = getBaseConfig();
+
+                    configuration.clientId = result.ghostAdmin.get('slug');
+                    configuration.clientSecret = result.ghostAdmin.get('secret');
+
+                    if (config.get('auth:type') === 'ghost') {
+                        configuration.ghostAuthId = result.ghostAuth && result.ghostAuth.get('uuid') || 'not-available';
+                        configuration.ghostAuthUrl = config.get('auth:url');
+                    }
+
+                    return {configuration: [configuration]};
+                });
         }
+
+        if (options.key === 'about') {
+            return Promise.resolve({configuration: [getAboutConfig()]});
+        }
+
+        // Timezone endpoint
+        if (options.key === 'timezones') {
+            return Promise.resolve({configuration: [fetchAvailableTimezones()]});
+        }
+
+        return Promise.resolve({configuration: []});
     }
 };
 
